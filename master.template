@@ -1,0 +1,74 @@
+{
+  "AWSTemplateFormatVersion":"2010-09-09",
+  "Description":"Deploy a Salt master server in a VPC",
+
+  "Parameters":{
+    "keyPair":{
+      "Description":"Enter Amazon Key Pair Name",
+      "Type":"AWS::EC2::KeyPair::KeyName"
+    },
+    "saltServerIP":{
+      "Description":"The IP address for the Salt Server",
+      "Type":"String",
+      "Default":"10.10.1.10"
+    },
+    "saltServerInstanceType":{
+      "Description":"The Instance Type to use for the Salt Server",
+      "Type":"String",
+      "Default":"t2.small",
+      "AllowedValues":[
+        "t2.small",
+        "t2.medium",
+        "t2.large",
+        "m4.large",
+        "c4.large",
+        "r3.large"
+      ]
+    },
+    "vpcCIDR":{
+      "Description":"The IP Address range for the SaltStack VPC",
+      "Type":"String",
+      "Default":"10.10.0.0/16"
+    },
+    "publicSubnetCIDR":{
+      "Description":"The IP Address range for the public subnet",
+      "Type":"String",
+      "Default":"10.10.0.0/24"
+    },
+    "privateSubnetCIDR":{
+      "Description":"The IP Address range for the private subnet",
+      "Type":"String",
+      "Default":"10.10.1.0/24"
+    }
+  },
+
+  "Resources":{
+    "vpcStack":{
+      "Type":"AWS::CloudFormation::Stack",
+      "Properties":{
+        "Parameters":{
+          "vpcCIDR":{"Ref":"vpcCIDR"},
+          "publicSubnetCIDR":{"Ref":"publicSubnetCIDR"},
+          "privateSubnetCIDR":{"Ref":"privateSubnetCIDR"}
+        },
+        "TemplateURL":"https://s3.amazonaws.com/cloudformation.ei2.ca/salt/vpc.template"
+      }
+    },
+    "ec2Stack":{
+      "DependsOn":"vpcStack",
+      "Type":"AWS::CloudFormation::Stack",
+      "Properties":{
+        "Parameters":{
+          "keyPair":{"Ref":"keyPair"},
+          "saltServerIP":{"Ref":"saltServerIP"},
+          "saltServerInstanceType":{"Ref":"saltServerInstanceType"},
+          "vpcCIDR":{"Ref":"vpcCIDR"},
+          "vpcID":{"Fn::GetAtt":["vpcStack","Outputs.vpcID"]},
+          "privateSubnetID":{"Fn::GetAtt":["vpcStack","Outputs.privateSubnetID"]},
+          "publicSubnetID":{"Fn::GetAtt":["vpcStack","Outputs.publicSubnetID"]}
+        },
+        "TemplateURL":"https://s3.amazonaws.com/cloudformation.ei2.ca/salt/ec2.template"
+      }
+    }
+  }
+}

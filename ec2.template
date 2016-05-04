@@ -1,0 +1,213 @@
+{
+  "AWSTemplateFormatVersion":"2010-09-09",
+  "Description":"Create an EC2 instance for the Salt Master",
+
+  "Parameters":{
+    "keyPair":{
+      "Description":"Enter Amazon Key Pair Name",
+      "Type":"AWS::EC2::KeyPair::KeyName"
+    },
+    "saltServerIP":{
+      "Description":"The IP address for the Salt Server",
+      "Type":"String",
+      "Default":"10.10.1.10"
+    },
+    "saltServerInstanceType":{
+      "Description":"The Instance Type to use for the Salt Server",
+      "Type":"String",
+      "Default":"t2.small",
+      "AllowedValues":[
+        "t2.small",
+        "t2.medium",
+        "t2.large",
+        "m4.large",
+        "c4.large",
+        "r3.large"
+      ]
+    },
+    "vpcCIDR":{
+      "Description":"The VPC CIDR associated witht the Saltstack VPC",
+      "Type":"String"
+    },
+    "vpcID":{
+      "Description":"The ID asscociated with the Saltstack VPC",
+      "Type":"String"
+    },
+    "privateSubnetID":{
+      "Description":"The ID associated with the private subnet in the Saltstack VPC",
+      "Type":"String"
+    },
+    "publicSubnetID":{
+      "Description":"The ID associated with the public subnet in the Saltstack VPC",
+      "Type":"String"
+    }
+  },
+
+  "Mappings":{
+    "RegionMap":{
+      "us-east-1"     :{"64":"ami-08111162"},
+      "us-west-1"     :{"64":"ami-1b0f7d7b"},
+      "us-west-2"     :{"64":"ami-c229c0a2"},
+      "eu-west-1"     :{"64":"ami-31328842"},
+      "eu-central-1"  :{"64":"ami-e2df388d"},
+      "ap-northeast-1":{"64":"ami-f80e0596"},
+      "ap-northeast-2":{"64":"ami-6598510b"},
+      "ap-southeast-1":{"64":"ami-e90dc68a"},
+      "ap-southeast-2":{"64":"ami-f2210191"},
+      "sa-east-1"     :{"64":"ami-1e159872"}
+    }
+  },
+
+  "Resources":{
+    "saltMasterSecurityGroup":{
+      "Type":"AWS::EC2::SecurityGroup",
+      "Properties":{
+        "GroupDescription":"Default Security Group for Master Salt Server",
+        "SecurityGroupIngress":[
+          {
+            "IpProtocol":"tcp",
+            "FromPort":"4505",
+            "ToPort":"4506",
+            "CidrIp":{"Ref":"vpcCIDR"}
+          },
+          {
+            "IpProtocol":"tcp",
+            "FromPort":"22",
+            "ToPort":"22",
+            "SourceSecurityGroupId":{"Ref":"bastionSecurityGroup"}
+          }
+        ],
+        "VpcId":{"Ref":"vpcID"},
+        "Tags":[
+          {"Key":"Name","Value":{"Fn::Join":["-",["salt",{"Fn::Select":["0",{"Fn::GetAZs":""}]},{"Ref":"AWS::StackName"},"sg"]]}}
+        ]
+      }
+    },
+    "bastionSecurityGroup":{
+      "Type":"AWS::EC2::SecurityGroup",
+      "Properties":{
+        "GroupDescription":"Default security group for Bastion Host",
+        "SecurityGroupIngress":[{
+          "IpProtocol":"tcp",
+          "FromPort":"22",
+          "ToPort":"22",
+          "CidrIp":"0.0.0.0/0"
+        }],
+        "VpcId":{"Ref":"vpcID"},
+        "Tags":[
+          {"Key":"Name","Value":{"Fn::Join":["-",["bastion",{"Fn::Select":["0",{"Fn::GetAZs":""}]},{"Ref":"AWS::StackName"},"sg"]]}}
+        ]
+      }
+    },
+    "saltMasterRole":{
+      "Type":"AWS::IAM::Role",
+      "Properties":{
+        "AssumeRolePolicyDocument": {
+          "Version" : "2012-10-17",
+            "Statement": [ {
+              "Effect": "Allow",
+                "Principal": {
+                  "Service": [ "ec2.amazonaws.com" ]
+                },
+              "Action": [ "sts:AssumeRole" ]
+            } ]
+        }
+      }
+    },
+    "saltRolePolicy":{
+      "Type":"AWS::IAM::Policy",
+      "Properties":{
+        "PolicyName":"root",
+        "PolicyDocument":{
+          "Statement":[{
+            "Effect":"Allow",
+            "Action":"cloudformation:DescribeStackResource",
+            "Resource":"*"
+            }]
+          },
+        "Roles":[{"Ref":"saltMasterRole"}]
+      }
+    },
+    "saltMasterInstanceProfile":{
+      "Type":"AWS::IAM::InstanceProfile",
+      "Properties":{
+        "Path":"/",
+        "Roles":[{"Ref":"saltMasterRole"}]
+      }
+    },
+    "bastionEIP":{
+      "Type":"AWS::EC2::EIP",
+      "Properties":{
+        "InstanceId":{"Ref":"bastionHost"},
+        "Domain":"vpc"
+      }
+    },
+    "saltMasterEC2Instance":{
+      "Type":"AWS::EC2::Instance",
+      "Metadata":{
+        "AWS::CloudFormation::Init":{
+          "configSets":{
+            "salt_install":["enable_yum","install_salt"]
+          },
+          "enable_yum":{
+            "files":{
+              "/etc/yum.repos.d/epel.repo": {
+                "owner": "root",
+                "source": "https://s3.amazonaws.com/cloudformation-examples/enable-epel-on-amazon-linux-ami",
+                "group": "root",
+                "mode": "000644"
+              }
+            }
+          },
+          "install_salt":{
+            "packages":{
+              "yum":{
+                "salt-master":[]
+              }
+            },
+            "services":{
+              "sysvinit" : {
+                "salt-master"   : { "enabled" : "true", "ensureRunning" : "true" }
+              }
+            }
+          }
+        }
+      },
+      "Properties":{
+        "UserData":{"Fn::Base64":{"Fn::Join":["",[
+              "#!/bin/bash -v \n",
+              "yum update -y aws-cfn-bootstap\n",
+              "yum update -y\n",
+              "/opt/aws/bin/cfn-init ",
+              "         --stack ", { "Ref" : "AWS::StackName" },
+              "         --resource saltMasterEC2Instance ",
+              "         --configsets salt_install ",
+              "         --region ", { "Ref" : "AWS::Region" }, "\n"
+		    ]]}},
+        "IamInstanceProfile":{"Ref":"saltMasterInstanceProfile"},
+        "ImageId":{"Fn::FindInMap":["RegionMap",{"Ref":"AWS::Region"},"64"]},
+        "InstanceType":{"Ref":"saltServerInstanceType"},
+        "KeyName":{"Ref":"keyPair"},
+        "PrivateIpAddress":{"Ref":"saltServerIP"},
+        "SecurityGroupIds":[{"Ref":"saltMasterSecurityGroup"}],
+        "SubnetId":{"Ref":"privateSubnetID"},
+        "Tags":[
+          {"Key":"Name","Value":"SaltServer"}
+        ]
+      }
+    },
+    "bastionHost":{
+      "Type":"AWS::EC2::Instance",
+      "Properties":{
+        "ImageId":{"Fn::FindInMap":["RegionMap",{"Ref":"AWS::Region"},"64"]},
+        "InstanceType":{"Ref":"saltServerInstanceType"},
+        "KeyName":{"Ref":"keyPair"},
+        "SecurityGroupIds":[{"Ref":"bastionSecurityGroup"}],
+        "SubnetId":{"Ref":"publicSubnetID"},
+        "Tags":[
+          {"Key":"Name","Value":"Bastion"}
+        ]
+      }
+    }
+  }
+}
